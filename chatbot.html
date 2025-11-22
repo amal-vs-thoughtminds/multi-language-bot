@@ -457,6 +457,7 @@
         let audioChunks = [];
         let isRecording = false;
         let currentTab = 'text';
+        let useStreaming = true; // Enable streaming by default
 
         // Generate session ID
         function generateSessionId() {
@@ -573,46 +574,128 @@
             setLoading(true);
 
             try {
-                const formData = new FormData();
-                formData.append('session_id', sessionId);
-                formData.append('text', text);
-                // Explicitly don't send audio field when sending text
-
-                const response = await fetch(`${API_URL}/chat`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    let errorMessage = 'Failed to send message';
-                    try {
-                        const error = await response.json();
-                        // Handle different error formats
-                        if (error.detail) {
-                            if (Array.isArray(error.detail)) {
-                                errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
-                            } else if (typeof error.detail === 'string') {
-                                errorMessage = error.detail;
-                            } else {
-                                errorMessage = JSON.stringify(error.detail);
-                            }
-                        } else if (error.message) {
-                            errorMessage = error.message;
-                        }
-                    } catch (e) {
-                        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                    }
-                    throw new Error(errorMessage);
+                if (useStreaming) {
+                    await sendMessageStream(text);
+                } else {
+                    await sendMessageNormal(text);
                 }
-
-                const data = await response.json();
-                handleResponse(data);
             } catch (error) {
                 console.error('Text send error:', error);
                 showError(error.message || 'Failed to send message');
             } finally {
                 setLoading(false);
             }
+        }
+
+        // Send message with streaming
+        async function sendMessageStream(text) {
+            const formData = new FormData();
+            formData.append('session_id', sessionId);
+            formData.append('text', text);
+
+            const response = await fetch(`${API_URL}/chat/stream`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to send message');
+            }
+
+            // Create bot message placeholder
+            const messagesContainer = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot';
+            messageDiv.innerHTML = `
+                <div class="message-avatar">🐟</div>
+                <div class="message-content" id="streaming-content"></div>
+            `;
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            const contentDiv = document.getElementById('streaming-content');
+            let metadata = null;
+            let fullText = '';
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            if (data.type === 'metadata') {
+                                metadata = data;
+                                // Update language info
+                                if (data.detected_language) {
+                                    document.getElementById('language-info').innerHTML = 
+                                        `Language: <span class="language-badge">${data.detected_language}</span>`;
+                                }
+                            } else if (data.type === 'chunk') {
+                                fullText += data.content;
+                                contentDiv.textContent = fullText;
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            } else if (data.type === 'done') {
+                                // Streaming complete
+                                if (data.full_reply) {
+                                    fullText = data.full_reply;
+                                    contentDiv.textContent = fullText;
+                                }
+                            }
+                        } catch (e) {
+                            console.error('Error parsing SSE data:', e);
+                        }
+                    }
+                }
+            }
+
+            // Update message ID for future reference
+            contentDiv.id = '';
+        }
+
+        // Send message normally (non-streaming)
+        async function sendMessageNormal(text) {
+            const formData = new FormData();
+            formData.append('session_id', sessionId);
+            formData.append('text', text);
+
+            const response = await fetch(`${API_URL}/chat`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                let errorMessage = 'Failed to send message';
+                try {
+                    const error = await response.json();
+                    if (error.detail) {
+                        if (Array.isArray(error.detail)) {
+                            errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
+                        } else if (typeof error.detail === 'string') {
+                            errorMessage = error.detail;
+                        } else {
+                            errorMessage = JSON.stringify(error.detail);
+                        }
+                    } else if (error.message) {
+                        errorMessage = error.message;
+                    }
+                } catch (e) {
+                    errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            handleResponse(data);
         }
 
         // Send audio message
@@ -636,35 +719,11 @@
                 
                 formData.append('audio', audioBlob, filename);
 
-                const response = await fetch(`${API_URL}/chat`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    let errorMessage = 'Failed to send audio';
-                    try {
-                        const error = await response.json();
-                        // Handle different error formats
-                        if (error.detail) {
-                            if (Array.isArray(error.detail)) {
-                                errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
-                            } else if (typeof error.detail === 'string') {
-                                errorMessage = error.detail;
-                            } else {
-                                errorMessage = JSON.stringify(error.detail);
-                            }
-                        } else if (error.message) {
-                            errorMessage = error.message;
-                        }
-                    } catch (e) {
-                        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                    }
-                    throw new Error(errorMessage);
+                if (useStreaming) {
+                    await sendAudioMessageStream(formData);
+                } else {
+                    await sendAudioMessageNormal(formData);
                 }
-
-                const data = await response.json();
-                handleResponse(data);
             } catch (error) {
                 console.error('Audio send error:', error);
                 showError(error.message || 'Failed to send audio message');
@@ -672,6 +731,116 @@
                 setLoading(false);
                 document.getElementById('audio-status').textContent = '';
             }
+        }
+
+        // Send audio with streaming
+        async function sendAudioMessageStream(formData) {
+            const response = await fetch(`${API_URL}/chat/stream`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to send audio');
+            }
+
+            // Create bot message placeholder
+            const messagesContainer = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot';
+            messageDiv.innerHTML = `
+                <div class="message-avatar">🐟</div>
+                <div class="message-content" id="streaming-content"></div>
+            `;
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            const contentDiv = document.getElementById('streaming-content');
+            let metadata = null;
+            let fullText = '';
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            if (data.type === 'metadata') {
+                                metadata = data;
+                                // Update language info
+                                if (data.detected_language) {
+                                    document.getElementById('language-info').innerHTML = 
+                                        `Language: <span class="language-badge">${data.detected_language}</span>`;
+                                }
+                                // Update user message with transcribed text
+                                if (data.customer_text && data.source === 'audio') {
+                                    const messages = document.getElementById('chat-messages');
+                                    const lastUserMessage = messages.querySelector('.message.user:last-child');
+                                    if (lastUserMessage) {
+                                        const content = lastUserMessage.querySelector('.message-content');
+                                        content.innerHTML = `🎤 ${data.customer_text}`;
+                                    }
+                                }
+                            } else if (data.type === 'chunk') {
+                                fullText += data.content;
+                                contentDiv.textContent = fullText;
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            } else if (data.type === 'done') {
+                                if (data.full_reply) {
+                                    fullText = data.full_reply;
+                                    contentDiv.textContent = fullText;
+                                }
+                            }
+                        } catch (e) {
+                            console.error('Error parsing SSE data:', e);
+                        }
+                    }
+                }
+            }
+
+            contentDiv.id = '';
+        }
+
+        // Send audio normally (non-streaming)
+        async function sendAudioMessageNormal(formData) {
+            const response = await fetch(`${API_URL}/chat`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                let errorMessage = 'Failed to send audio';
+                try {
+                    const error = await response.json();
+                    if (error.detail) {
+                        if (Array.isArray(error.detail)) {
+                            errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
+                        } else if (typeof error.detail === 'string') {
+                            errorMessage = error.detail;
+                        } else {
+                            errorMessage = JSON.stringify(error.detail);
+                        }
+                    } else if (error.message) {
+                        errorMessage = error.message;
+                    }
+                } catch (e) {
+                    errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            handleResponse(data);
         }
 
         // Handle API response

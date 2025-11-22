@@ -13,8 +13,8 @@ import whisper
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from langdetect import DetectorFactory, LangDetectException, detect
+from fastapi.responses import JSONResponse, StreamingResponse
+from langdetect import DetectorFactory, LangDetectException, detect, detect_langs
 from langcodes import Language
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -179,6 +179,24 @@ async def run_llm(messages: list[dict], temperature: float = 0.2) -> str:
     return extract_chat_completion_text(response)
 
 
+async def run_llm_stream(messages: list[dict], temperature: float = 0.2):
+    """Stream LLM responses from OpenAI."""
+    chat_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+    
+    stream = await client.chat.completions.create(
+        model=settings.response_model,
+        messages=chat_messages,
+        temperature=temperature,
+        stream=True,
+    )
+    
+    async for chunk in stream:
+        if chunk.choices:
+            delta = chunk.choices[0].delta
+            if hasattr(delta, 'content') and delta.content:
+                yield delta.content
+
+
 memory_store = ConversationMemory(
     session_factory=async_session_factory,
     client=client,
@@ -244,15 +262,107 @@ async def generate_answer(
     return await run_llm(messages, temperature=0.2)
 
 
+async def generate_answer_stream(
+    *,
+    catalog_context: list[str],
+    english_text: str,
+    language_name: str,
+    conversation_summary: str | None,
+    conversation_history: list[ConversationSnippet],
+):
+    """Stream LLM responses."""
+    catalog_block = "\n".join(f"- {item}" for item in catalog_context) or "No catalog data."
+    target_language = language_name or "English"
+    conversation_segments: list[str] = []
+    if conversation_summary:
+        conversation_segments.append(f"Session summary:\n{conversation_summary}")
+    if conversation_history:
+        turns = "\n".join(
+            f"{turn.role.title()}: {turn.content}" for turn in conversation_history
+        )
+        conversation_segments.append(f"Recent turns:\n{turns}")
+    conversation_block = "\n\n".join(conversation_segments) or "No prior context."
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Meera, a helpful fish market seller. "
+                "Use the provided fish catalog to answer questions about price, "
+                "availability, and stock. Be concise, polite, and always end your "
+                "reply by asking the customer how many kilograms they would like. "
+                "If information is missing, say you can check with the supplier. "
+                f"Replay answer in {target_language} language."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Fish catalog:\n{catalog_block}\n\n"
+                f"Conversation context:\n{conversation_block}\n\n"
+                f"Customer request (English):\n{english_text}"
+            ),
+        },
+    ]
+    async for chunk in run_llm_stream(messages, temperature=0.2):
+        yield chunk
+
+
 async def process_text_payload(text: str) -> tuple[str, str, str, str]:
     cleaned = text.strip()
     if not cleaned:
         raise HTTPException(status_code=400, detail="Text input is empty.")
 
+    # Common English words/phrases that might be misdetected
+    common_english_phrases = [
+        "i need", "i want", "how much", "what is", "tell me", "show me",
+        "need", "want", "price", "cost", "available", "stock", "have",
+        "do you have", "can you", "please", "thank you", "yes", "no"
+    ]
+    
+    # Check if text contains common English phrases (case insensitive)
+    text_lower = cleaned.lower()
+    has_english_phrase = any(phrase in text_lower for phrase in common_english_phrases)
+    
+    # For very short text or text with English phrases, be more conservative
+    min_length_for_detection = 10
+    is_short_text = len(cleaned.split()) < 3
+    
+    lang_code = "en"  # Default to English
+    confidence = 0.0
+    
     try:
-        lang_code = detect(cleaned)
+        # Try to detect with confidence scores
+        detected_langs_list = detect_langs(cleaned)
+        if detected_langs_list:
+            top_lang = detected_langs_list[0]
+            lang_code = top_lang.lang
+            confidence = top_lang.prob
+            
+            # If text is short or has English phrases, require higher confidence
+            min_confidence = 0.7 if (is_short_text or has_english_phrase) else 0.5
+            
+            # If confidence is low or text seems English, default to English
+            if confidence < min_confidence or (has_english_phrase and lang_code != "en"):
+                lang_code = "en"
+            # If detected language is not English but confidence is very high, trust it
+            elif lang_code != "en" and confidence >= 0.9:
+                # Trust the detection
+                pass
+            # For ambiguous cases with English phrases, default to English
+            elif has_english_phrase:
+                lang_code = "en"
     except LangDetectException:
         lang_code = "en"
+    except Exception:
+        # Fallback to simple detect if detect_langs fails
+        try:
+            lang_code = detect(cleaned)
+            # If it's not English but text has English phrases, override
+            if has_english_phrase and lang_code != "en":
+                lang_code = "en"
+        except LangDetectException:
+            lang_code = "en"
+    
     lang_name = language_name_from_code(lang_code)
 
     if lang_code.lower() == "en":
@@ -527,5 +637,172 @@ async def chat_endpoint(
         seller_reply=final_reply,
         context_used=catalog_context,
         audio_url=audio_url,
+    )
+
+
+@app.post("/chat/stream")
+async def chat_stream_endpoint(
+    request: Request,
+    session_id: str = Form(
+        ...,
+        description="Session identifier for conversation memory",
+    ),
+    text: str | None = Form(
+        default=None,
+        description="Customer text message (optional if audio is provided)",
+    ),
+    audio: UploadFile | None = File(  # pyright: ignore[reportUndefinedVariable]
+        default=None,
+        description="Customer audio message (optional if text is provided)",
+    ),
+):
+    """Stream chat responses from OpenAI."""
+    session_id = session_id.strip()
+    text_value = text.strip() if (text and isinstance(text, str) and text.strip()) else None
+
+    # Handle audio file
+    audio_file: UploadFile | None = None
+    if audio is not None:
+        try:
+            if hasattr(audio, 'filename') or hasattr(audio, 'content_type') or hasattr(audio, 'read'):
+                audio_file = audio
+        except (AttributeError, TypeError):
+            pass
+    
+    if audio_file is None:
+        try:
+            form = await request.form()
+            audio_candidate = form.get("audio")
+            if audio_candidate and isinstance(audio_candidate, UploadFile):
+                audio_file = audio_candidate
+        except Exception:
+            pass
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required to maintain context.")
+
+    if text_value is None and audio_file is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either a non-empty 'text' field or an 'audio' file.",
+        )
+
+    audio_url: str | None = None
+    if audio_file is not None:
+        source: Literal["text", "audio"] = "audio"
+        audio_blob = await audio_file.read()
+        if not audio_blob:
+            raise HTTPException(status_code=400, detail="Audio file is empty.")
+        
+        audio_url = await upload_audio_to_s3(
+            audio_blob=audio_blob,
+            filename=audio_file.filename,
+            content_type=audio_file.content_type,
+            session_id=session_id,
+        )
+        
+        (
+            original_text,
+            english_text,
+            detected_code,
+            language_name,
+        ) = await process_audio_payload(audio_blob, audio_file.filename)
+    else:
+        source = "text"
+        (
+            original_text,
+            english_text,
+            detected_code,
+            language_name,
+        ) = await process_text_payload(text_value or "")
+
+    store = await ensure_vector_store()
+    catalog_context = await store.query(english_text, settings.max_context_items)
+
+    if memory_store is None:
+        raise HTTPException(status_code=500, detail="Memory store unavailable.")
+
+    conversation_summary, conversation_history = await memory_store.build_context(
+        session_id=session_id,
+        query_text=english_text,
+    )
+
+    async def generate_stream():
+        """Generate streaming response with metadata and text chunks."""
+        # Send metadata first
+        metadata = {
+            "type": "metadata",
+            "detected_language": language_name,
+            "detected_language_code": detected_code,
+            "source": source,
+            "customer_text": original_text,
+            "english_text": english_text,
+            "audio_url": audio_url,
+        }
+        yield f"data: {json.dumps(metadata)}\n\n"
+        
+        # Stream the response
+        full_reply = ""
+        async for chunk in generate_answer_stream(
+            catalog_context=catalog_context,
+            english_text=english_text,
+            language_name=language_name,
+            conversation_summary=conversation_summary,
+            conversation_history=conversation_history,
+        ):
+            full_reply += chunk
+            # Send each chunk
+            chunk_data = {
+                "type": "chunk",
+                "content": chunk,
+            }
+            yield f"data: {json.dumps(chunk_data)}\n\n"
+        
+        # Send completion signal
+        completion_data = {
+            "type": "done",
+            "full_reply": full_reply,
+        }
+        yield f"data: {json.dumps(completion_data)}\n\n"
+        
+        # Save to memory after streaming
+        if language_name.lower() == "english":
+            seller_reply_en = full_reply
+        else:
+            seller_reply_en = await translate_text(full_reply, "English")
+        final_reply = full_reply
+
+        await memory_store.record_message(
+            session_id=session_id,
+            role="user",
+            content=english_text,
+            metadata={
+                "original_text": original_text,
+                "language": language_name,
+                "source": source,
+                "audio_url": audio_url,
+            },
+            trigger_summary=False,
+        )
+
+        await memory_store.record_message(
+            session_id=session_id,
+            role="assistant",
+            content=seller_reply_en,
+            metadata={
+                "reply_language": language_name,
+                "translated_reply": final_reply if language_name.lower() != "english" else None,
+            },
+            trigger_summary=True,
+        )
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
