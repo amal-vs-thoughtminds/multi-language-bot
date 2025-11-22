@@ -1,0 +1,28 @@
+[
+    {
+        "code": "en",
+        "name": "English",
+        "is_default": true
+    },
+    {
+        "code": "ml",
+        "name": "Malayalam",
+        "is_default": false
+    },
+    {
+        "code": "hi",
+        "name": "Hindi",
+        "is_default": false
+    },
+    {
+        "code": "zh",
+        "name": "Chinese",
+        "is_default": false
+    },
+    {
+        "code": "ja",
+        "name": "Japanese",
+        "is_default": false
+    }
+]
+

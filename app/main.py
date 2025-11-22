@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import tempfile
 import uuid
 from datetime import datetime
@@ -76,6 +77,7 @@ client = AsyncOpenAI(api_key=settings.openai_api_key)
 vector_store: FishVectorStore | None = None
 _whisper_model: whisper.Whisper | None = None
 memory_store: ConversationMemory | None = None
+_supported_languages: dict[str, str] | None = None  # Map of language codes to names
 
 # Initialize S3 client
 s3_client = boto3.client(
@@ -121,13 +123,60 @@ def extract_chat_completion_text(response) -> str:
     return "".join(chunks).strip()
 
 
+def load_supported_languages() -> dict[str, str]:
+    """Load supported languages from JSON file."""
+    global _supported_languages
+    if _supported_languages is not None:
+        return _supported_languages
+    
+    lang_path = settings.supported_languages_path
+    if not lang_path.exists():
+        # Default to English only if file doesn't exist
+        _supported_languages = {"en": "English"}
+        return _supported_languages
+    
+    try:
+        raw_data = json.loads(lang_path.read_text())
+        _supported_languages = {}
+        for lang in raw_data:
+            code = lang.get("code", "").lower()
+            name = lang.get("name", "")
+            if code and name:
+                _supported_languages[code] = name
+        # Ensure English is always supported
+        if "en" not in _supported_languages:
+            _supported_languages["en"] = "English"
+        return _supported_languages
+    except Exception:
+        # Fallback to English only
+        _supported_languages = {"en": "English"}
+        return _supported_languages
+
+
+def is_language_supported(lang_code: str) -> bool:
+    """Check if a language code is in the supported languages list."""
+    if not lang_code:
+        return False
+    supported = load_supported_languages()
+    return lang_code.lower() in supported
+
+
 def language_name_from_code(code: str | None) -> str:
+    """Get language name from code, using supported languages list if available."""
     if not code:
         return "English"
+    
+    # First check supported languages
+    supported = load_supported_languages()
+    code_lower = code.lower()
+    if code_lower in supported:
+        return supported[code_lower]
+    
+    # Fallback to langcodes library
     try:
         return Language.get(code).language_name().title()
     except Exception:  # pragma: no cover - fallback for unknown codes
-        if code.lower() == "en":
+        if code_lower == "en":
             return "English"
         return code
 
@@ -224,11 +273,17 @@ async def generate_answer(
     catalog_context: list[str],
     english_text: str,
     language_name: str,
+    language_code: str,
     conversation_summary: str | None,
     conversation_history: list[ConversationSnippet],
 ) -> str:
     catalog_block = "\n".join(f"- {item}" for item in catalog_context) or "No catalog data."
-    target_language = language_name or "English"
+    
+    # Use supported language name, or default to English if not supported
+    if is_language_supported(language_code):
+        target_language = language_name or "English"
+    else:
+        target_language = "English"
     conversation_segments: list[str] = []
     if conversation_summary:
         conversation_segments.append(f"Session summary:\n{conversation_summary}")
@@ -267,12 +322,18 @@ async def generate_answer_stream(
     catalog_context: list[str],
     english_text: str,
     language_name: str,
+    language_code: str,
     conversation_summary: str | None,
     conversation_history: list[ConversationSnippet],
 ):
     """Stream LLM responses."""
     catalog_block = "\n".join(f"- {item}" for item in catalog_context) or "No catalog data."
-    target_language = language_name or "English"
+    
+    # Use supported language name, or default to English if not supported
+    if is_language_supported(language_code):
+        target_language = language_name or "English"
+    else:
+        target_language = "English"
     conversation_segments: list[str] = []
     if conversation_summary:
         conversation_segments.append(f"Session summary:\n{conversation_summary}")
@@ -316,7 +377,9 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
     common_english_phrases = [
         "i need", "i want", "how much", "what is", "tell me", "show me",
         "need", "want", "price", "cost", "available", "stock", "have",
-        "do you have", "can you", "please", "thank you", "yes", "no"
+        "do you have", "can you", "can i", "can i get", "i can", "i would like",
+        "please", "thank you", "yes", "no", "give me", "get me", "i'll take",
+        "i'd like", "how many", "how much", "what's the", "is there", "are there"
     ]
     
     # Common English greeting words (single words that are clearly English)
@@ -332,6 +395,14 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
     
     # Check if text is a common English word
     is_common_english_word = text_lower in [w.lower() for w in common_english_words]
+    
+    # Check for English patterns: numbers with units (kg, kgs, pounds, etc.)
+    has_english_patterns = bool(
+        re.search(r'\d+\s*(kg|kgs|kilogram|kilograms|pound|pounds|lb|lbs|gram|grams|g)', text_lower, re.IGNORECASE) or
+        re.search(r'\b(can|will|would|should|could|may|might)\s+(i|you|we|they)', text_lower) or
+        re.search(r'\b(i|you|we|they)\s+(need|want|like|get|have|take)', text_lower) or
+        re.search(r'\b(how|what|when|where|why|which)\s+', text_lower)
+    )
     
     # For very short text or text with English phrases, be more conservative
     min_length_for_detection = 10
@@ -355,8 +426,11 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
             lang_code = top_lang.lang
             confidence = top_lang.prob
             
+            # If text has English patterns (like "can i get", numbers with units), prioritize English
+            if has_english_patterns and lang_code != "en":
+                lang_code = "en"
             # For single words or very short text, require very high confidence for non-English
-            if is_single_word or is_short_text:
+            elif is_single_word or is_short_text:
                 # For single words, only trust non-English if confidence is extremely high
                 min_confidence = 0.95 if is_single_word else 0.8
                 if lang_code != "en" and confidence < min_confidence:
@@ -368,14 +442,18 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
                         lang_code = "en"
             else:
                 # For longer text, use normal confidence thresholds
-                min_confidence = 0.7 if has_english_phrase else 0.5
+                # But if it has English phrases or patterns, require higher confidence for non-English
+                min_confidence = 0.8 if (has_english_phrase or has_english_patterns) else 0.5
                 
                 # If confidence is low or text seems English, default to English
                 if confidence < min_confidence or (has_english_phrase and lang_code != "en"):
                     lang_code = "en"
+                # If text has English patterns but detected as non-English, override
+                elif has_english_patterns and lang_code != "en":
+                    lang_code = "en"
                 # If detected language is not English but confidence is very high, trust it
-                elif lang_code != "en" and confidence >= 0.9:
-                    # Trust the detection
+                elif lang_code != "en" and confidence >= 0.9 and not has_english_patterns:
+                    # Trust the detection only if no English patterns found
                     pass
                 # For ambiguous cases with English phrases, default to English
                 elif has_english_phrase:
@@ -386,14 +464,21 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
         # Fallback to simple detect if detect_langs fails
         try:
             lang_code = detect(cleaned)
-            # If it's not English but text has English phrases or is a common word, override
-            if (has_english_phrase or is_common_english_word) and lang_code != "en":
+            # If it's not English but text has English phrases, patterns, or is a common word, override
+            if (has_english_phrase or has_english_patterns or is_common_english_word) and lang_code != "en":
                 lang_code = "en"
             # For single words, be cautious
             if is_single_word and lang_code != "en" and cleaned.isascii():
                 lang_code = "en"
         except LangDetectException:
             lang_code = "en"
+    
+    # Check if detected language is supported
+    if not is_language_supported(lang_code):
+        # If not supported, default to English
+        lang_code = "en"
+        lang_name = "English"
+        return cleaned, cleaned, lang_code, lang_name
     
     lang_name = language_name_from_code(lang_code)
 
@@ -456,6 +541,12 @@ async def process_audio_payload(audio_blob: bytes, filename: str | None) -> tupl
         raise HTTPException(status_code=400, detail="Unable to transcribe audio.")
 
     lang_code = result.get("language", "en")
+    
+    # Check if detected language is supported
+    if not is_language_supported(lang_code):
+        # If not supported, default to English
+        lang_code = "en"
+    
     lang_name = language_name_from_code(lang_code)
     return english_text, english_text, lang_code, lang_name
 
@@ -625,15 +716,20 @@ async def chat_endpoint(
         catalog_context=catalog_context,
         english_text=english_text,
         language_name=language_name,
+        language_code=detected_code,
         conversation_summary=conversation_summary,
         conversation_history=conversation_history,
     )
 
-    if language_name.lower() == "english":
-        seller_reply_en = seller_reply
-    else:
+    # Determine reply language based on supported languages
+    if is_language_supported(detected_code) and language_name.lower() != "english":
+        # Reply in detected language if supported
         seller_reply_en = await translate_text(seller_reply, "English")
-    final_reply = seller_reply
+        final_reply = seller_reply
+    else:
+        # Reply in English (either detected as English or unsupported language)
+        seller_reply_en = seller_reply
+        final_reply = seller_reply
 
     await memory_store.record_message(
         session_id=session_id,
@@ -779,6 +875,7 @@ async def chat_stream_endpoint(
             catalog_context=catalog_context,
             english_text=english_text,
             language_name=language_name,
+            language_code=detected_code,
             conversation_summary=conversation_summary,
             conversation_history=conversation_history,
         ):
@@ -798,11 +895,15 @@ async def chat_stream_endpoint(
         yield f"data: {json.dumps(completion_data)}\n\n"
         
         # Save to memory after streaming
-        if language_name.lower() == "english":
-            seller_reply_en = full_reply
-        else:
+        # Determine reply language based on supported languages
+        if is_language_supported(detected_code) and language_name.lower() != "english":
+            # Reply in detected language if supported
             seller_reply_en = await translate_text(full_reply, "English")
-        final_reply = full_reply
+            final_reply = full_reply
+        else:
+            # Reply in English (either detected as English or unsupported language)
+            seller_reply_en = full_reply
+            final_reply = full_reply
 
         await memory_store.record_message(
             session_id=session_id,

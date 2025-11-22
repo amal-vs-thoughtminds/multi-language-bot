@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     tts_voice: str = "alloy"
     embedding_model: str = "text-embedding-3-small"
     fish_data_path: Path = Path(__file__).resolve().parent.parent / "fish_rate.json"
+    supported_languages_path: Path = Path(__file__).resolve().parent.parent / "supported_languages.json"
     max_context_items: int = 4
     database_url: str = (
         "postgresql+psycopg://voicebot:voicebot@postgres:5432/voicebot"
