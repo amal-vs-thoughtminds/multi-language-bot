@@ -319,16 +319,33 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
         "do you have", "can you", "please", "thank you", "yes", "no"
     ]
     
+    # Common English greeting words (single words that are clearly English)
+    common_english_words = [
+        "hello", "hi", "hey", "hey there", "good morning", "good afternoon",
+        "good evening", "good night", "thanks", "bye", "goodbye", "see you",
+        "ok", "okay", "sure", "fine", "well", "okay", "alright", "right"
+    ]
+    
     # Check if text contains common English phrases (case insensitive)
-    text_lower = cleaned.lower()
+    text_lower = cleaned.lower().strip()
     has_english_phrase = any(phrase in text_lower for phrase in common_english_phrases)
+    
+    # Check if text is a common English word
+    is_common_english_word = text_lower in [w.lower() for w in common_english_words]
     
     # For very short text or text with English phrases, be more conservative
     min_length_for_detection = 10
     is_short_text = len(cleaned.split()) < 3
+    is_single_word = len(cleaned.split()) == 1
     
     lang_code = "en"  # Default to English
     confidence = 0.0
+    
+    # If it's a common English word, immediately default to English
+    if is_common_english_word:
+        lang_code = "en"
+        lang_name = language_name_from_code(lang_code)
+        return cleaned, cleaned, lang_code, lang_name
     
     try:
         # Try to detect with confidence scores
@@ -338,27 +355,42 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
             lang_code = top_lang.lang
             confidence = top_lang.prob
             
-            # If text is short or has English phrases, require higher confidence
-            min_confidence = 0.7 if (is_short_text or has_english_phrase) else 0.5
-            
-            # If confidence is low or text seems English, default to English
-            if confidence < min_confidence or (has_english_phrase and lang_code != "en"):
-                lang_code = "en"
-            # If detected language is not English but confidence is very high, trust it
-            elif lang_code != "en" and confidence >= 0.9:
-                # Trust the detection
-                pass
-            # For ambiguous cases with English phrases, default to English
-            elif has_english_phrase:
-                lang_code = "en"
+            # For single words or very short text, require very high confidence for non-English
+            if is_single_word or is_short_text:
+                # For single words, only trust non-English if confidence is extremely high
+                min_confidence = 0.95 if is_single_word else 0.8
+                if lang_code != "en" and confidence < min_confidence:
+                    lang_code = "en"
+                # If it's a single word and not English, be very cautious
+                elif is_single_word and lang_code != "en":
+                    # Check if it looks like English (ASCII characters, common patterns)
+                    if cleaned.isascii() and not any(char in cleaned for char in "àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"):
+                        lang_code = "en"
+            else:
+                # For longer text, use normal confidence thresholds
+                min_confidence = 0.7 if has_english_phrase else 0.5
+                
+                # If confidence is low or text seems English, default to English
+                if confidence < min_confidence or (has_english_phrase and lang_code != "en"):
+                    lang_code = "en"
+                # If detected language is not English but confidence is very high, trust it
+                elif lang_code != "en" and confidence >= 0.9:
+                    # Trust the detection
+                    pass
+                # For ambiguous cases with English phrases, default to English
+                elif has_english_phrase:
+                    lang_code = "en"
     except LangDetectException:
         lang_code = "en"
     except Exception:
         # Fallback to simple detect if detect_langs fails
         try:
             lang_code = detect(cleaned)
-            # If it's not English but text has English phrases, override
-            if has_english_phrase and lang_code != "en":
+            # If it's not English but text has English phrases or is a common word, override
+            if (has_english_phrase or is_common_english_word) and lang_code != "en":
+                lang_code = "en"
+            # For single words, be cautious
+            if is_single_word and lang_code != "en" and cleaned.isascii():
                 lang_code = "en"
         except LangDetectException:
             lang_code = "en"
