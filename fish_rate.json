@@ -1,0 +1,27 @@
+[
+    {
+        "fish_names": ["tuna", "金枪鱼", "jīn qiāng yú"],
+        "fish_stock": 50,
+        "price per kg": 250
+    },
+    {
+        "fish_names": ["salmon", "三文鱼", "sān wén yú"],
+        "fish_stock": 40,
+        "price per kg": 350
+    },
+    {
+        "fish_names": ["cod", "鳕鱼", "xuě yú"],
+        "fish_stock": 60,
+        "price per kg": 180
+    },
+    {
+        "fish_names": ["halibut", "大比目鱼", "dà bǐ mù yú"],
+        "fish_stock": 35,
+        "price per kg": 320
+    },
+    {
+        "fish_names": ["mahi-mahi", "鲯鳅", "qí qiū"],
+        "fish_stock": 45,
+        "price per kg": 280
+    }
+]

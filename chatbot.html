@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fish Market Chatbot - Meera's Fish Shop</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 800px;
+            height: 90vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .chat-header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .fish-icon {
+            font-size: 28px;
+        }
+
+        .chat-header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f5f7fa;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            flex-direction: row-reverse;
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .message.bot .message-avatar {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.bot .message-content {
+            background: white;
+            color: #333;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        .message-meta {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 5px;
+        }
+
+        .message.user .message-meta {
+            text-align: right;
+        }
+
+        .audio-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            margin-top: 5px;
+            opacity: 0.8;
+        }
+
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .input-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .tab-button {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .tab-button.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .text-input-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .text-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 14px;
+            resize: none;
+            min-height: 50px;
+            max-height: 120px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        .text-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .audio-input-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .audio-recorder {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .record-button {
+            padding: 15px;
+            border: none;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+        }
+
+        .record-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(245, 87, 108, 0.6);
+        }
+
+        .record-button.recording {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.1);
+            }
+        }
+
+        .audio-file-input {
+            padding: 10px;
+            border: 2px dashed #e0e0e0;
+            border-radius: 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .audio-file-input:hover {
+            border-color: #667eea;
+            background: #f5f7fa;
+        }
+
+        .audio-file-input input {
+            display: none;
+        }
+
+        .send-button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+
+        .send-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .session-info {
+            padding: 10px 20px;
+            background: #f5f7fa;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 12px;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .language-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #667eea;
+            color: white;
+            border-radius: 12px;
+            font-size: 10px;
+            margin-left: 5px;
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 10px;
+            border-radius: 10px;
+            margin: 10px 20px;
+            font-size: 14px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* Scrollbar styling */
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 3px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>
+                <span class="fish-icon">🐟</span>
+                Meera's Fish Market
+            </h1>
+            <p>Your friendly fish seller assistant</p>
+        </div>
+        
+        <div class="session-info">
+            <span>Session: <strong id="session-id">Loading...</strong></span>
+            <span id="language-info"></span>
+        </div>
+
+        <div class="chat-messages" id="chat-messages">
+            <div class="message bot">
+                <div class="message-avatar">🐟</div>
+                <div class="message-content">
+                    <div>Hello! I'm Meera, your fish market assistant. I can help you with:</div>
+                    <div style="margin-top: 10px;">
+                        • Fish prices and availability<br>
+                        • Stock information<br>
+                        • Placing orders
+                    </div>
+                    <div style="margin-top: 10px;">You can chat with me using text or voice in any language!</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="error-container"></div>
+
+        <div class="chat-input-container">
+            <div class="input-tabs">
+                <button class="tab-button active" id="text-tab" onclick="switchTab('text')">
+                    💬 Text
+                </button>
+                <button class="tab-button" id="audio-tab" onclick="switchTab('audio')">
+                    🎤 Voice
+                </button>
+            </div>
+
+            <div class="input-group">
+                <div class="text-input-container" id="text-input-container">
+                    <textarea 
+                        class="text-input" 
+                        id="text-input" 
+                        placeholder="Type your message here..."
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                    ></textarea>
+                </div>
+
+                <div class="audio-input-container hidden" id="audio-input-container">
+                    <div class="audio-recorder">
+                        <button class="record-button" id="record-button" onclick="toggleRecording()">
+                            🎤
+                        </button>
+                        <div class="audio-file-input" onclick="document.getElementById('audio-file-input').click()">
+                            <input type="file" id="audio-file-input" accept="audio/*" onchange="handleAudioFileSelect(event)">
+                            <div>📁 Click to upload audio file</div>
+                        </div>
+                        <div id="audio-status" style="font-size: 12px; color: #666; text-align: center;"></div>
+                    </div>
+                </div>
+
+                <button class="send-button" id="send-button" onclick="sendMessage()">
+                    <span id="send-text">Send</span>
+                    <span id="send-loading" class="loading hidden"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let sessionId = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let currentTab = 'text';
+
+        // Generate session ID
+        function generateSessionId() {
+            return 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        }
+
+        // Initialize
+        window.onload = function() {
+            sessionId = generateSessionId();
+            document.getElementById('session-id').textContent = sessionId.substring(0, 20) + '...';
+        };
+
+        // Switch between text and audio tabs
+        function switchTab(tab) {
+            currentTab = tab;
+            const textContainer = document.getElementById('text-input-container');
+            const audioContainer = document.getElementById('audio-input-container');
+            const textTab = document.getElementById('text-tab');
+            const audioTab = document.getElementById('audio-tab');
+
+            if (tab === 'text') {
+                textContainer.classList.remove('hidden');
+                audioContainer.classList.add('hidden');
+                textTab.classList.add('active');
+                audioTab.classList.remove('active');
+            } else {
+                textContainer.classList.add('hidden');
+                audioContainer.classList.remove('hidden');
+                textTab.classList.remove('active');
+                audioTab.classList.add('active');
+            }
+        }
+
+        // Handle Enter key
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // Toggle audio recording
+        async function toggleRecording() {
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        sendAudioMessage(audioBlob);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    mediaRecorder.start();
+                    isRecording = true;
+                    document.getElementById('record-button').classList.add('recording');
+                    document.getElementById('audio-status').textContent = 'Recording... Click again to stop';
+                } catch (error) {
+                    showError('Microphone access denied. Please allow microphone access or upload an audio file.');
+                }
+            } else {
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                    isRecording = false;
+                    document.getElementById('record-button').classList.remove('recording');
+                    document.getElementById('audio-status').textContent = 'Processing...';
+                }
+            }
+        }
+
+        // Handle audio file selection
+        function handleAudioFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                // Validate file type
+                if (!file.type.startsWith('audio/')) {
+                    showError('Please select an audio file');
+                    event.target.value = ''; // Clear the input
+                    return;
+                }
+                
+                document.getElementById('audio-status').textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                sendAudioMessage(file);
+                
+                // Clear the input so the same file can be selected again
+                event.target.value = '';
+            }
+        }
+
+        // Send text message
+        async function sendMessage() {
+            // Check which tab is active
+            if (currentTab === 'audio') {
+                showError('Please use the audio recording button or upload an audio file');
+                return;
+            }
+
+            const textInput = document.getElementById('text-input');
+            const text = textInput.value.trim();
+
+            if (!text) {
+                showError('Please enter a message');
+                return;
+            }
+
+            addMessage('user', text);
+            textInput.value = '';
+            setLoading(true);
+
+            try {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('text', text);
+                // Explicitly don't send audio field when sending text
+
+                const response = await fetch(`${API_URL}/chat`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    let errorMessage = 'Failed to send message';
+                    try {
+                        const error = await response.json();
+                        // Handle different error formats
+                        if (error.detail) {
+                            if (Array.isArray(error.detail)) {
+                                errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
+                            } else if (typeof error.detail === 'string') {
+                                errorMessage = error.detail;
+                            } else {
+                                errorMessage = JSON.stringify(error.detail);
+                            }
+                        } else if (error.message) {
+                            errorMessage = error.message;
+                        }
+                    } catch (e) {
+                        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const data = await response.json();
+                handleResponse(data);
+            } catch (error) {
+                console.error('Text send error:', error);
+                showError(error.message || 'Failed to send message');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // Send audio message
+        async function sendAudioMessage(audioBlob) {
+            setLoading(true);
+            addMessage('user', '🎤 Audio message', true);
+
+            try {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                
+                // Determine filename based on blob type
+                let filename = 'audio.webm';
+                if (audioBlob instanceof File) {
+                    filename = audioBlob.name || 'audio.webm';
+                } else if (audioBlob.type) {
+                    // Extract extension from MIME type
+                    const ext = audioBlob.type.split('/')[1] || 'webm';
+                    filename = `audio.${ext}`;
+                }
+                
+                formData.append('audio', audioBlob, filename);
+
+                const response = await fetch(`${API_URL}/chat`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    let errorMessage = 'Failed to send audio';
+                    try {
+                        const error = await response.json();
+                        // Handle different error formats
+                        if (error.detail) {
+                            if (Array.isArray(error.detail)) {
+                                errorMessage = error.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
+                            } else if (typeof error.detail === 'string') {
+                                errorMessage = error.detail;
+                            } else {
+                                errorMessage = JSON.stringify(error.detail);
+                            }
+                        } else if (error.message) {
+                            errorMessage = error.message;
+                        }
+                    } catch (e) {
+                        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const data = await response.json();
+                handleResponse(data);
+            } catch (error) {
+                console.error('Audio send error:', error);
+                showError(error.message || 'Failed to send audio message');
+            } finally {
+                setLoading(false);
+                document.getElementById('audio-status').textContent = '';
+            }
+        }
+
+        // Handle API response
+        function handleResponse(data) {
+            // Update language info
+            if (data.detected_language) {
+                document.getElementById('language-info').innerHTML = 
+                    `Language: <span class="language-badge">${data.detected_language}</span>`;
+            }
+
+            // Show customer text if different from what we sent
+            if (data.customer_text && data.source === 'audio') {
+                // Update last user message with transcribed text
+                const messages = document.getElementById('chat-messages');
+                const lastUserMessage = messages.querySelector('.message.user:last-child');
+                if (lastUserMessage) {
+                    const content = lastUserMessage.querySelector('.message-content');
+                    content.innerHTML = `🎤 ${data.customer_text}`;
+                }
+            }
+
+            // Add bot response
+            addMessage('bot', data.seller_reply, false, {
+                language: data.detected_language,
+                source: data.source
+            });
+
+            // Show audio URL if available
+            if (data.audio_url) {
+                addMessage('system', `📎 Audio file: <a href="${data.audio_url}" target="_blank">${data.audio_url}</a>`);
+            }
+        }
+
+        // Add message to chat
+        function addMessage(sender, content, isAudio = false, meta = {}) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+
+            const avatar = sender === 'user' ? '👤' : '🐟';
+            const metaText = meta.language ? ` (${meta.language})` : '';
+
+            messageDiv.innerHTML = `
+                <div class="message-avatar">${avatar}</div>
+                <div class="message-content">
+                    ${content}
+                    ${isAudio ? '<div class="audio-indicator">🎤 Audio</div>' : ''}
+                    ${meta.language ? `<div class="message-meta">Detected: ${meta.language}</div>` : ''}
+                </div>
+            `;
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        // Show error message
+        function showError(message) {
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = `<div class="error-message">${message}</div>`;
+            setTimeout(() => {
+                errorContainer.innerHTML = '';
+            }, 5000);
+        }
+
+        // Set loading state
+        function setLoading(loading) {
+            const sendButton = document.getElementById('send-button');
+            const sendText = document.getElementById('send-text');
+            const sendLoading = document.getElementById('send-loading');
+
+            if (loading) {
+                sendButton.disabled = true;
+                sendText.classList.add('hidden');
+                sendLoading.classList.remove('hidden');
+            } else {
+                sendButton.disabled = false;
+                sendText.classList.remove('hidden');
+                sendLoading.classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html>
+

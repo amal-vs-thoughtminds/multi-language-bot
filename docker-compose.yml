@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: fish-market-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voicebot
+      POSTGRES_PASSWORD: voicebot
+      POSTGRES_DB: voicebot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  voice-bot:
+    build: .
+    container_name: fish-market-voice-bot
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    cpus: 4
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - RESPONSE_MODEL=${RESPONSE_MODEL:-gpt-4o-mini}
+      - TTS_MODEL=${TTS_MODEL:-gpt-4o-mini-tts}
+      - TTS_VOICE=${TTS_VOICE:-alloy}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://voicebot:voicebot@postgres:5432/voicebot}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-AKIA3WZT7R3WKUQWK64T}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-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}
+      - AWS_REGION=${AWS_REGION:-ap-south-1}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-blog-616}
+    volumes:
+      - ./.cache:/root/.cache
+
+volumes:
+  pgdata:
+
