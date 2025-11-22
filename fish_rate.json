@@ -1,18 +1,18 @@
 [
     {
-        "fish_names": ["tuna", "金枪鱼", "jīn qiāng yú"],
+        "fish_names": ["Salmon", "കീരമീൻ", "鲑鱼", "サーモン"],
         "fish_stock": 50,
-        "price per kg": 250
+        "price per kg": 800
     },
     {
-        "fish_names": ["salmon", "三文鱼", "sān wén yú"],
+        "fish_names": ["Tuna", "ചൂര", "金枪鱼", "マグロ"],
         "fish_stock": 40,
-        "price per kg": 350
+        "price per kg": 600
     },
     {
-        "fish_names": ["cod", "鳕鱼", "xuě yú"],
+        "fish_names": ["Cod", "കോഡ്", "鳕鱼", "タラ"],
         "fish_stock": 60,
-        "price per kg": 180
+        "price per kg": 500
     },
     {
         "fish_names": ["halibut", "大比目鱼", "dà bǐ mù yú"],
@@ -23,5 +23,15 @@
         "fish_names": ["mahi-mahi", "鲯鳅", "qí qiū"],
         "fish_stock": 45,
         "price per kg": 280
+    },
+    {
+        "fish_names": ["Tilapia", "തിലാപിയ", "罗非鱼", "ティラピア"],
+        "fish_stock": 70,
+        "price per kg": 400
+    },
+    {
+        "fish_names": ["Mackerel", "അയല", "鲭鱼", "サバ"],
+        "fish_stock": 45,
+        "price per kg": 350
     }
 ]

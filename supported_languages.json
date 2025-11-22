@@ -10,11 +10,6 @@
         "is_default": false
     },
     {
-        "code": "hi",
-        "name": "Hindi",
-        "is_default": false
-    },
-    {
         "code": "zh",
         "name": "Chinese",
         "is_default": false

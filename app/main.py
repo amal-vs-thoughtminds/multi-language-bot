@@ -5,12 +5,16 @@ import json
 import re
 import tempfile
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import boto3
 import whisper
+
+# Suppress FP16 warning on CPU (Whisper automatically falls back to FP32)
+warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -251,6 +255,34 @@ memory_store = ConversationMemory(
     client=client,
     run_llm=run_llm,
 )
+
+
+def is_listing_all_fishes_query(text: str) -> bool:
+    """Detect if the query is asking for all available fishes."""
+    text_lower = text.lower().strip()
+    listing_patterns = [
+        "what are the available",
+        "what are available",
+        "list all",
+        "show me all",
+        "tell me all",
+        "what fishes",
+        "what fish",
+        "all fishes",
+        "all fish",
+        "available fishes",
+        "available fish",
+        "what do you have",
+        "what do you sell",
+        "what's available",
+        "what is available",
+        "show available",
+        "list available",
+        "tell me what",
+        "what can i",
+        "what can you",
+    ]
+    return any(pattern in text_lower for pattern in listing_patterns)
 
 
 async def translate_text(text: str, target_language: str) -> str:
@@ -702,7 +734,11 @@ async def chat_endpoint(
         ) = await process_text_payload(text_value or "")
 
     store = await ensure_vector_store()
-    catalog_context = await store.query(english_text, settings.max_context_items)
+    # If query is asking for all available fishes, return all records
+    if is_listing_all_fishes_query(english_text):
+        catalog_context = store.get_all_records()
+    else:
+        catalog_context = await store.query(english_text, settings.max_context_items)
 
     if memory_store is None:
         raise HTTPException(status_code=500, detail="Memory store unavailable.")
@@ -845,7 +881,11 @@ async def chat_stream_endpoint(
         ) = await process_text_payload(text_value or "")
 
     store = await ensure_vector_store()
-    catalog_context = await store.query(english_text, settings.max_context_items)
+    # If query is asking for all available fishes, return all records
+    if is_listing_all_fishes_query(english_text):
+        catalog_context = store.get_all_records()
+    else:
+        catalog_context = await store.query(english_text, settings.max_context_items)
 
     if memory_store is None:
         raise HTTPException(status_code=500, detail="Memory store unavailable.")

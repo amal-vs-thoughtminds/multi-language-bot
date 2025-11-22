@@ -60,6 +60,10 @@ class FishVectorStore:
         self._embeddings = vectors / norms
         self._norms = np.squeeze(norms, axis=1)
 
+    def get_all_records(self) -> list[str]:
+        """Return all fish descriptions."""
+        return [record.dense_text for record in self._records]
+
     async def query(self, text: str, top_k: int = 3) -> list[str]:
         """Return top fish descriptions relevant to the query."""
         if self._embeddings is None or self._embeddings.size == 0:
