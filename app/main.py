@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import re
 import tempfile
@@ -19,11 +20,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langdetect import DetectorFactory, LangDetectException, detect, detect_langs
 from langcodes import Language
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
 from app.database import async_session_factory
-from app.fish_vector_store import FishVectorStore, load_fish_records
+from app.fish_vector_store import FishRecord, FishVectorStore, load_fish_records
 from app.memory import ConversationMemory, ConversationSnippet
 
 DetectorFactory.seed = 0
@@ -119,6 +120,63 @@ class ChatResponse(BaseModel):
     audio_url: str | None = Field(default=None, description="S3 URL of uploaded audio file if audio was provided")
 
 
+class MailOrderRequest(BaseModel):
+    subject: str = Field(..., description="Email subject line")
+    sender: str = Field(..., alias="from", description="Sender email address")
+    body: str = Field(..., description="Email body text")
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class MailOrderItem(BaseModel):
+    raw_phrase: str
+    catalog_fish_name: str | None = None
+    quantity_kg: float
+    preparation_notes: str | None = None
+    cleaning_level: str | None = None
+
+
+class FishAvailabilityResult(BaseModel):
+    requested_item: str
+    catalog_fish_name: str | None
+    requested_quantity_kg: float
+    fulfillable_quantity_kg: float
+    price_per_kg: float | None
+    subtotal: float | None
+    status: Literal["available", "insufficient_stock", "unavailable"]
+    notes: str | None = None
+
+
+class MailOrderResponse(BaseModel):
+    status: Literal["confirmed", "partial", "unavailable"]
+    message: str
+    customer_email: str | None = None
+    subject: str | None = None
+    delivery_preferences: str | None = None
+    order_items: list[MailOrderItem] = Field(default_factory=list)
+    availability: list[FishAvailabilityResult]
+    total_amount: float
+    currency: str = Field(default="INR", description="Currency for totals")
+
+
+FISH_ORDER_KEYWORDS = [
+    "fish order",
+    "order fish",
+    "seafood",
+    "prawn",
+    "prawns",
+    "shrimp",
+    "crab",
+    "lobster",
+    "salmon",
+    "tuna",
+    "cod",
+    "mackerel",
+    "tilapia",
+    "king fish",
+    "kingfish",
+]
+
 def extract_output_text(response) -> str:
     chunks: list[str] = []
     for item in getattr(response, "output", []) or []:
@@ -140,6 +198,111 @@ def extract_chat_completion_text(response) -> str:
         elif isinstance(content, list):
             chunks.extend(block.get("text", "") for block in content if isinstance(block, dict))
     return "".join(chunks).strip()
+
+
+def normalize_fish_name(label: str | None) -> str:
+    """Normalize fish names for catalog matching."""
+    if not label:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", label.lower())
+
+
+def build_fish_index(records: list[FishRecord]) -> dict[str, FishRecord]:
+    """Build a lookup table for known fish aliases."""
+    index: dict[str, FishRecord] = {}
+    for record in records:
+        for alias in record.names:
+            key = normalize_fish_name(alias)
+            if key and key not in index:
+                index[key] = record
+    return index
+
+
+def match_fish_record(raw_name: str | None, index: dict[str, FishRecord]) -> FishRecord | None:
+    """Find the best catalog match for a requested fish name."""
+    if not raw_name:
+        return None
+    key = normalize_fish_name(raw_name)
+    if not key:
+        return None
+    if key in index:
+        return index[key]
+    if not index:
+        return None
+    match = difflib.get_close_matches(key, list(index.keys()), n=1, cutoff=0.82)
+    if match:
+        return index[match[0]]
+    return None
+
+
+def coerce_json_object(raw_text: str) -> dict[str, Any]:
+    """Attempt to parse an LLM response into JSON."""
+    cleaned = raw_text.strip()
+    if not cleaned:
+        raise ValueError("LLM returned an empty response.")
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        first = cleaned.find("{")
+        last = cleaned.rfind("}")
+        if first != -1 and last != -1 and last >= first:
+            snippet = cleaned[first : last + 1]
+            return json.loads(snippet)
+        raise
+
+
+def is_fish_order_email(mail_request: MailOrderRequest, records: list[FishRecord]) -> bool:
+    """Heuristically confirm the email is about fish/seafood orders."""
+    combined_text = f"{mail_request.subject} {mail_request.body}".lower()
+    normalized = re.sub(r"\s+", " ", combined_text)
+    if any(keyword in normalized for keyword in FISH_ORDER_KEYWORDS):
+        return True
+
+    for record in records:
+        for alias in record.names:
+            alias_lower = alias.lower().strip()
+            if alias_lower and alias_lower in normalized:
+                return True
+    return False
+
+
+def parse_order_items(structured_order: dict[str, Any]) -> list[MailOrderItem]:
+    """Convert structured items into MailOrderItem models."""
+    items: list[MailOrderItem] = []
+    for item in structured_order.get("items") or []:
+        try:
+            quantity = float(item.get("quantity_kg", 0))
+        except (TypeError, ValueError):
+            quantity = 0.0
+        raw_phrase = str(
+            item.get("raw_phrase")
+            or item.get("raw_item")
+            or item.get("catalog_fish_name")
+            or "unspecified fish"
+        )
+        items.append(
+            MailOrderItem(
+                raw_phrase=raw_phrase,
+                catalog_fish_name=item.get("catalog_fish_name"),
+                quantity_kg=quantity,
+                preparation_notes=item.get("preparation_notes"),
+                cleaning_level=item.get("cleaning_level"),
+            )
+        )
+    return items
+
+
+def email_payload_to_toon(mail_request: MailOrderRequest) -> dict[str, Any]:
+    """Convert the inbound email JSON into TOON before sending to the LLM."""
+    return {
+        "type": "tool_output",
+        "tool_name": "mail_plugin_email_payload",
+        "tool_output": {
+            "subject": mail_request.subject,
+            "from": mail_request.sender,
+            "body": mail_request.body,
+        },
+    }
 
 
 def load_supported_languages() -> dict[str, str]:
@@ -279,6 +442,179 @@ async def run_llm_stream(messages: list[dict], temperature: float = 0.2):
             delta = chunk.choices[0].delta
             if hasattr(delta, 'content') and delta.content:
                 yield delta.content
+
+
+async def extract_mail_order_structured_data(
+    mail_request: MailOrderRequest,
+    records: list[FishRecord],
+) -> dict[str, Any]:
+    """Use the LLM to convert an email payload into TOON (strict JSON)."""
+    catalog_snapshot = [
+        {
+            "name": record.primary_name,
+            "aliases": record.names,
+            "stock_kg": record.stock,
+            "price_per_kg": record.price_per_kg,
+        }
+        for record in records
+    ]
+    email_payload_toon = email_payload_to_toon(mail_request)
+    schema_description = {
+        "customer_email": "string",
+        "subject": "string",
+        "delivery_preferences": "string | null",
+        "items": [
+            {
+                "raw_phrase": "string",
+                "catalog_fish_name": "string | null  # MUST be a provided catalog name",
+                "quantity_kg": "number",
+                "preparation_notes": "string | null",
+                "cleaning_level": "string | null",
+            }
+        ],
+        "additional_requests": "string | null",
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an order extraction assistant for a fish market. "
+                "Convert the provided email JSON into TOON (Tool Output Object Notation), "
+                "which is strict JSON following the required schema. "
+                "Always map fish names to the catalog list when possible. "
+                "Respond with JSON only."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Email payload (already in TOON format):\n"
+                f"{json.dumps(email_payload_toon, ensure_ascii=False, indent=2)}\n\n"
+                "Fish catalog:\n"
+                f"{json.dumps(catalog_snapshot, ensure_ascii=False, indent=2)}\n\n"
+                "Return ONLY JSON that matches this schema:\n"
+                f"{json.dumps(schema_description, ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+    llm_output = await run_llm(messages, temperature=0.0)
+    try:
+        structured = coerce_json_object(llm_output)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM returned invalid JSON: {exc}") from exc
+    if not structured.get("items"):
+        raise ValueError("No order line items detected in the email.")
+    structured.setdefault("customer_email", mail_request.sender)
+    structured.setdefault("subject", mail_request.subject)
+    return structured
+
+
+def evaluate_mail_order_availability(
+    structured_order: dict[str, Any],
+    records: list[FishRecord],
+) -> tuple[list[FishAvailabilityResult], Literal["confirmed", "partial", "unavailable"], float]:
+    """Check each fish item for availability and build a fulfillment report."""
+    items = structured_order.get("items") or []
+    if not items:
+        raise ValueError("Structured order did not contain any items.")
+    index = build_fish_index(records)
+    results: list[FishAvailabilityResult] = []
+    total_amount = 0.0
+
+    for item in items:
+        raw_item = str(
+            item.get("raw_phrase")
+            or item.get("raw_item")
+            or item.get("catalog_fish_name")
+            or "unspecified fish"
+        ).strip()
+        catalog_name = (
+            item.get("catalog_fish_name")
+            or item.get("fish_name")
+            or item.get("normalized_fish_name")
+        )
+        try:
+            requested_qty = float(item.get("quantity_kg", 0))
+        except (TypeError, ValueError):
+            requested_qty = 0.0
+
+        if requested_qty <= 0:
+            results.append(
+                FishAvailabilityResult(
+                    requested_item=raw_item,
+                    catalog_fish_name=catalog_name,
+                    requested_quantity_kg=0.0,
+                    fulfillable_quantity_kg=0.0,
+                    price_per_kg=None,
+                    subtotal=None,
+                    status="unavailable",
+                    notes="Quantity missing or invalid.",
+                )
+            )
+            continue
+
+        record = match_fish_record(catalog_name or raw_item, index)
+        if record is None:
+            results.append(
+                FishAvailabilityResult(
+                    requested_item=raw_item,
+                    catalog_fish_name=None,
+                    requested_quantity_kg=requested_qty,
+                    fulfillable_quantity_kg=0.0,
+                    price_per_kg=None,
+                    subtotal=None,
+                    status="unavailable",
+                    notes="Fish not found in catalog.",
+                )
+            )
+            continue
+
+        available_qty = max(record.stock, 0)
+        price = float(record.price_per_kg)
+        if available_qty == 0:
+            status = "unavailable"
+            fulfillable_qty = 0.0
+            subtotal = None
+            note = "Out of stock."
+        elif requested_qty <= available_qty:
+            status = "available"
+            fulfillable_qty = requested_qty
+            subtotal = round(fulfillable_qty * price, 2)
+            total_amount += subtotal
+            note = None
+        else:
+            status = "insufficient_stock"
+            fulfillable_qty = float(available_qty)
+            subtotal = round(fulfillable_qty * price, 2)
+            total_amount += subtotal
+            note = f"Only {available_qty} kg available."
+
+        results.append(
+            FishAvailabilityResult(
+                requested_item=raw_item,
+                catalog_fish_name=record.primary_name,
+                requested_quantity_kg=requested_qty,
+                fulfillable_quantity_kg=fulfillable_qty,
+                price_per_kg=price,
+                subtotal=subtotal,
+                status=status,
+                notes=note,
+            )
+        )
+
+    if not results:
+        raise ValueError("Unable to build availability report.")
+
+    all_available = all(entry.status == "available" for entry in results)
+    any_fulfilled = any(entry.fulfillable_quantity_kg > 0 for entry in results)
+    if all_available:
+        overall_status: Literal["confirmed", "partial", "unavailable"] = "confirmed"
+    elif any_fulfilled:
+        overall_status = "partial"
+    else:
+        overall_status = "unavailable"
+
+    return results, overall_status, round(total_amount, 2)
 
 
 memory_store = ConversationMemory(
@@ -1097,3 +1433,64 @@ async def chat_stream_endpoint(
         },
     )
 
+
+@app.post("/mail-plugin/orders", response_model=MailOrderResponse)
+async def process_mail_plugin_order(mail_request: MailOrderRequest) -> MailOrderResponse:
+    """Endpoint for email plugins to validate and confirm fish orders."""
+    store = await ensure_vector_store()
+    records = store.get_records()
+    if not records:
+        raise HTTPException(status_code=503, detail="Fish catalog unavailable.")
+
+    if not is_fish_order_email(mail_request, records):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "No order line items detected in the email.",
+                "status": "error",
+            },
+        )
+
+    try:
+        structured_order = await extract_mail_order_structured_data(mail_request, records)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to interpret email: {exc}") from exc
+
+    order_items = parse_order_items(structured_order)
+
+    try:
+        availability, order_status, total_amount = evaluate_mail_order_availability(
+            structured_order,
+            records,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if order_status == "confirmed":
+        message = "All requested fishes are available. Order confirmed."
+    elif order_status == "partial":
+        unavailable_items = [
+            entry.requested_item for entry in availability if entry.status != "available"
+        ]
+        missing_text = ", ".join(unavailable_items) or "unspecified items"
+        message = (
+            "The order is partially available. "
+            f"Items needing attention: {missing_text}."
+        )
+    else:
+        message = "Requested fishes are unavailable at the moment."
+
+    payload = MailOrderResponse(
+        status=order_status,
+        message=message,
+        customer_email=structured_order.get("customer_email"),
+        subject=structured_order.get("subject"),
+        delivery_preferences=structured_order.get("delivery_preferences"),
+        order_items=order_items,
+        availability=availability,
+        total_amount=total_amount,
+    )
+
+    return payload

@@ -64,6 +64,10 @@ class FishVectorStore:
         """Return all fish descriptions."""
         return [record.dense_text for record in self._records]
 
+    def get_records(self) -> list[FishRecord]:
+        """Return the raw fish records."""
+        return list(self._records)
+
     async def query(self, text: str, top_k: int = 3) -> list[str]:
         """Return top fish descriptions relevant to the query."""
         if self._embeddings is None or self._embeddings.size == 0:
