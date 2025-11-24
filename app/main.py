@@ -251,9 +251,20 @@ def coerce_json_object(raw_text: str) -> dict[str, Any]:
         raise
 
 
-def is_fish_order_email(mail_request: MailOrderRequest, records: list[FishRecord]) -> bool:
+def is_fish_order_email(
+    mail_request: MailOrderRequest,
+    records: list[FishRecord],
+    translated_subject: str | None = None,
+    translated_body: str | None = None,
+) -> bool:
     """Heuristically confirm the email is about fish/seafood orders."""
-    combined_text = f"{mail_request.subject} {mail_request.body}".lower()
+    segments = [
+        mail_request.subject or "",
+        mail_request.body or "",
+        translated_subject or "",
+        translated_body or "",
+    ]
+    combined_text = " ".join(segments).lower()
     normalized = re.sub(r"\s+", " ", combined_text)
     if any(keyword in normalized for keyword in FISH_ORDER_KEYWORDS):
         return True
@@ -292,15 +303,55 @@ def parse_order_items(structured_order: dict[str, Any]) -> list[MailOrderItem]:
     return items
 
 
-def email_payload_to_toon(mail_request: MailOrderRequest) -> dict[str, Any]:
-    """Convert the inbound email JSON into TOON before sending to the LLM."""
+async def prepare_email_payload_for_llm(
+    mail_request: MailOrderRequest,
+) -> tuple[str, str, str]:
+    """Detect email language and ensure we provide English text to the LLM."""
+    text_for_detection = " ".join(
+        segment for segment in [mail_request.subject, mail_request.body] if segment
+    ).strip()
+    detected_lang = "en"
+    if text_for_detection:
+        try:
+            detected_lang = normalize_language_code(detect(text_for_detection))
+        except LangDetectException:
+            detected_lang = "en"
+
+    english_subject = mail_request.subject or ""
+    english_body = mail_request.body or ""
+
+    if detected_lang != "en":
+        try:
+            english_subject = await translate_text(english_subject, "English") if english_subject else ""
+            english_body = await translate_text(english_body, "English") if english_body else ""
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to translate email content: {exc}",
+            ) from exc
+
+    return english_subject, english_body, detected_lang
+
+
+def email_payload_to_toon(
+    mail_request: MailOrderRequest,
+    subject_text: str,
+    body_text: str,
+    detected_language: str,
+) -> dict[str, Any]:
+    """Convert the inbound (possibly translated) email JSON into TOON."""
     return {
         "type": "tool_output",
         "tool_name": "mail_plugin_email_payload",
         "tool_output": {
-            "subject": mail_request.subject,
+            "subject": subject_text,
             "from": mail_request.sender,
-            "body": mail_request.body,
+            "body": body_text,
+            "detected_language": detected_language,
+            "subject_original": mail_request.subject,
+            "body_original": mail_request.body,
         },
     }
 
@@ -447,6 +498,10 @@ async def run_llm_stream(messages: list[dict], temperature: float = 0.2):
 async def extract_mail_order_structured_data(
     mail_request: MailOrderRequest,
     records: list[FishRecord],
+    *,
+    english_subject: str,
+    english_body: str,
+    detected_language: str,
 ) -> dict[str, Any]:
     """Use the LLM to convert an email payload into TOON (strict JSON)."""
     catalog_snapshot = [
@@ -458,7 +513,12 @@ async def extract_mail_order_structured_data(
         }
         for record in records
     ]
-    email_payload_toon = email_payload_to_toon(mail_request)
+    email_payload_toon = email_payload_to_toon(
+        mail_request=mail_request,
+        subject_text=english_subject,
+        body_text=english_body,
+        detected_language=detected_language,
+    )
     schema_description = {
         "customer_email": "string",
         "subject": "string",
@@ -479,7 +539,6 @@ async def extract_mail_order_structured_data(
             "role": "system",
             "content": (
                 "You are an order extraction assistant for a fish market. "
-                "Convert the provided email JSON into TOON (Tool Output Object Notation), "
                 "which is strict JSON following the required schema. "
                 "Always map fish names to the catalog list when possible. "
                 "Respond with JSON only."
@@ -488,7 +547,7 @@ async def extract_mail_order_structured_data(
         {
             "role": "user",
             "content": (
-                "Email payload (already in TOON format):\n"
+                "Email payload (already in TOON format, English text supplied):\n"
                 f"{json.dumps(email_payload_toon, ensure_ascii=False, indent=2)}\n\n"
                 "Fish catalog:\n"
                 f"{json.dumps(catalog_snapshot, ensure_ascii=False, indent=2)}\n\n"
@@ -505,7 +564,8 @@ async def extract_mail_order_structured_data(
     if not structured.get("items"):
         raise ValueError("No order line items detected in the email.")
     structured.setdefault("customer_email", mail_request.sender)
-    structured.setdefault("subject", mail_request.subject)
+    structured.setdefault("subject", english_subject)
+    structured.setdefault("detected_language", detected_language)
     return structured
 
 
@@ -1442,7 +1502,14 @@ async def process_mail_plugin_order(mail_request: MailOrderRequest) -> MailOrder
     if not records:
         raise HTTPException(status_code=503, detail="Fish catalog unavailable.")
 
-    if not is_fish_order_email(mail_request, records):
+    english_subject, english_body, detected_language = await prepare_email_payload_for_llm(mail_request)
+
+    if not is_fish_order_email(
+        mail_request,
+        records,
+        translated_subject=english_subject,
+        translated_body=english_body,
+    ):
         return JSONResponse(
             status_code=400,
             content={
@@ -1452,7 +1519,13 @@ async def process_mail_plugin_order(mail_request: MailOrderRequest) -> MailOrder
         )
 
     try:
-        structured_order = await extract_mail_order_structured_data(mail_request, records)
+        structured_order = await extract_mail_order_structured_data(
+            mail_request,
+            records,
+            english_subject=english_subject,
+            english_body=english_body,
+            detected_language=detected_language,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
