@@ -157,12 +157,33 @@ def load_supported_languages() -> dict[str, str]:
         return _supported_languages
 
 
+def normalize_language_code(lang_code: str) -> str:
+    """Normalize language code to base form (e.g., zh-cn -> zh, en-us -> en)."""
+    if not lang_code:
+        return "en"
+    code_lower = lang_code.lower()
+    # Extract base language code (before hyphen)
+    base_code = code_lower.split("-")[0].split("_")[0]
+    return base_code
+
+
+def contains_chinese_characters(text: str) -> bool:
+    """Check if text contains Chinese characters (CJK Unified Ideographs)."""
+    for char in text:
+        # Check for Chinese characters (CJK Unified Ideographs range)
+        if '\u4e00' <= char <= '\u9fff':
+            return True
+    return False
+
+
 def is_language_supported(lang_code: str) -> bool:
     """Check if a language code is in the supported languages list."""
     if not lang_code:
         return False
+    # Normalize the language code first (e.g., zh-cn -> zh)
+    normalized_code = normalize_language_code(lang_code)
     supported = load_supported_languages()
-    return lang_code.lower() in supported
+    return normalized_code in supported
 
 
 def language_name_from_code(code: str | None) -> str:
@@ -170,19 +191,21 @@ def language_name_from_code(code: str | None) -> str:
     if not code:
         return "English"
     
+    # Normalize the language code first (e.g., zh-cn -> zh)
+    normalized_code = normalize_language_code(code)
+    
     # First check supported languages
     supported = load_supported_languages()
-    code_lower = code.lower()
-    if code_lower in supported:
-        return supported[code_lower]
+    if normalized_code in supported:
+        return supported[normalized_code]
     
     # Fallback to langcodes library
     try:
-        return Language.get(code).language_name().title()
+        return Language.get(normalized_code).language_name().title()
     except Exception:  # pragma: no cover - fallback for unknown codes
-        if code_lower == "en":
+        if normalized_code == "en":
             return "English"
-        return code
+        return normalized_code
 
 
 async def ensure_vector_store() -> FishVectorStore:
@@ -304,6 +327,7 @@ async def generate_answer(
     *,
     catalog_context: list[str],
     english_text: str,
+    original_text: str,
     language_name: str,
     language_code: str,
     conversation_summary: str | None,
@@ -311,8 +335,11 @@ async def generate_answer(
 ) -> str:
     catalog_block = "\n".join(f"- {item}" for item in catalog_context) or "No catalog data."
     
+    # Normalize language code first
+    normalized_code = normalize_language_code(language_code)
+    
     # Use supported language name, or default to English if not supported
-    if is_language_supported(language_code):
+    if is_language_supported(normalized_code):
         target_language = language_name or "English"
     else:
         target_language = "English"
@@ -331,10 +358,19 @@ async def generate_answer(
             "content": (
                 "You are Meera, a helpful fish market seller. "
                 "Use the provided fish catalog to answer questions about price, "
-                "availability, and stock. Be concise, polite, and always end your "
-                "reply by asking the customer how many kilograms they would like. "
-                "If information is missing, say you can check with the supplier. "
-                f"Replay answer in {target_language} language."
+                "availability, and stock. Be concise, polite, and professional. "
+                "\n\nIMPORTANT CONVERSATION RULES:\n"
+                "1. If the customer has ALREADY specified a quantity (e.g., 'I need 5 kg salmon', 'give me 3 kg'), "
+                "acknowledge their order and confirm it. DO NOT ask for quantity again.\n"
+                "2. If the customer confirms or approves an order (e.g., 'okay proceed', 'yes confirm', 'you can process', 'go ahead'), "
+                "thank them and confirm the order is being processed. DO NOT ask for quantity again.\n"
+                "3. Only ask 'How many kilograms would you like?' if the customer is asking about availability or price "
+                "but has NOT yet specified a quantity.\n"
+                "4. When confirming an order, provide a clear summary: fish type, quantity, and price.\n"
+                "5. If information is missing, say you can check with the supplier.\n"
+                f"\nCRITICAL LANGUAGE REQUIREMENT: The customer is speaking in {target_language}. "
+                f"You MUST respond ENTIRELY in {target_language} - every word, every sentence. "
+                f"Never use English or any other language. Your entire response must be in {target_language} only."
             ),
         },
         {
@@ -342,7 +378,8 @@ async def generate_answer(
             "content": (
                 f"Fish catalog:\n{catalog_block}\n\n"
                 f"Conversation context:\n{conversation_block}\n\n"
-                f"Customer request (English):\n{english_text}"
+                f"Customer request (original in {target_language}):\n{original_text}\n\n"
+                f"Customer request (translated to English):\n{english_text}"
             ),
         },
     ]
@@ -353,6 +390,7 @@ async def generate_answer_stream(
     *,
     catalog_context: list[str],
     english_text: str,
+    original_text: str,
     language_name: str,
     language_code: str,
     conversation_summary: str | None,
@@ -361,8 +399,11 @@ async def generate_answer_stream(
     """Stream LLM responses."""
     catalog_block = "\n".join(f"- {item}" for item in catalog_context) or "No catalog data."
     
+    # Normalize language code first
+    normalized_code = normalize_language_code(language_code)
+    
     # Use supported language name, or default to English if not supported
-    if is_language_supported(language_code):
+    if is_language_supported(normalized_code):
         target_language = language_name or "English"
     else:
         target_language = "English"
@@ -381,10 +422,19 @@ async def generate_answer_stream(
             "content": (
                 "You are Meera, a helpful fish market seller. "
                 "Use the provided fish catalog to answer questions about price, "
-                "availability, and stock. Be concise, polite, and always end your "
-                "reply by asking the customer how many kilograms they would like. "
-                "If information is missing, say you can check with the supplier. "
-                f"Replay answer in {target_language} language."
+                "availability, and stock. Be concise, polite, and professional. "
+                "\n\nIMPORTANT CONVERSATION RULES:\n"
+                "1. If the customer has ALREADY specified a quantity (e.g., 'I need 5 kg salmon', 'give me 3 kg'), "
+                "acknowledge their order and confirm it. DO NOT ask for quantity again.\n"
+                "2. If the customer confirms or approves an order (e.g., 'okay proceed', 'yes confirm', 'you can process', 'go ahead'), "
+                "thank them and confirm the order is being processed. DO NOT ask for quantity again.\n"
+                "3. Only ask 'How many kilograms would you like?' if the customer is asking about availability or price "
+                "but has NOT yet specified a quantity.\n"
+                "4. When confirming an order, provide a clear summary: fish type, quantity, and price.\n"
+                "5. If information is missing, say you can check with the supplier.\n"
+                f"\nCRITICAL LANGUAGE REQUIREMENT: The customer is speaking in {target_language}. "
+                f"You MUST respond ENTIRELY in {target_language} - every word, every sentence. "
+                f"Never use English or any other language. Your entire response must be in {target_language} only."
             ),
         },
         {
@@ -392,7 +442,8 @@ async def generate_answer_stream(
             "content": (
                 f"Fish catalog:\n{catalog_block}\n\n"
                 f"Conversation context:\n{conversation_block}\n\n"
-                f"Customer request (English):\n{english_text}"
+                f"Customer request (original in {target_language}):\n{original_text}\n\n"
+                f"Customer request (translated to English):\n{english_text}"
             ),
         },
     ]
@@ -505,14 +556,27 @@ async def process_text_payload(text: str) -> tuple[str, str, str, str]:
         except LangDetectException:
             lang_code = "en"
     
+    # Normalize language code (e.g., zh-cn -> zh)
+    raw_lang_code = lang_code
+    lang_code = normalize_language_code(lang_code)
+    print(f"[DEBUG Text] Raw detected language code: {raw_lang_code}, Normalized: {lang_code}")
+    
+    # Override Korean detection if text contains Chinese characters
+    # langdetect sometimes misdetects Chinese as Korean
+    if lang_code == "ko" and contains_chinese_characters(cleaned):
+        print(f"[DEBUG Text] Overriding Korean detection to Chinese (text contains Chinese characters)")
+        lang_code = "zh"
+    
     # Check if detected language is supported
     if not is_language_supported(lang_code):
         # If not supported, default to English
+        print(f"[DEBUG Text] Language {lang_code} not supported, defaulting to English")
         lang_code = "en"
         lang_name = "English"
         return cleaned, cleaned, lang_code, lang_name
     
     lang_name = language_name_from_code(lang_code)
+    print(f"[DEBUG Text] Final language: {lang_name} (code: {lang_code})")
 
     if lang_code.lower() == "en":
         return cleaned, cleaned, lang_code, lang_name
@@ -572,14 +636,21 @@ async def process_audio_payload(audio_blob: bytes, filename: str | None) -> tupl
     if not english_text:
         raise HTTPException(status_code=400, detail="Unable to transcribe audio.")
 
-    lang_code = result.get("language", "en")
+    raw_lang_code = result.get("language", "en")
+    print(f"[DEBUG Whisper] Raw detected language code: {raw_lang_code}")
+    
+    # Normalize language code (e.g., zh-cn -> zh)
+    lang_code = normalize_language_code(raw_lang_code)
+    print(f"[DEBUG Whisper] Normalized language code: {lang_code}")
     
     # Check if detected language is supported
     if not is_language_supported(lang_code):
         # If not supported, default to English
+        print(f"[DEBUG Whisper] Language {lang_code} not supported, defaulting to English")
         lang_code = "en"
     
     lang_name = language_name_from_code(lang_code)
+    print(f"[DEBUG Whisper] Final language: {lang_name} (code: {lang_code})")
     return english_text, english_text, lang_code, lang_name
 
 
@@ -751,6 +822,7 @@ async def chat_endpoint(
     seller_reply = await generate_answer(
         catalog_context=catalog_context,
         english_text=english_text,
+        original_text=original_text,
         language_name=language_name,
         language_code=detected_code,
         conversation_summary=conversation_summary,
@@ -914,6 +986,7 @@ async def chat_stream_endpoint(
         async for chunk in generate_answer_stream(
             catalog_context=catalog_context,
             english_text=english_text,
+            original_text=original_text,
             language_name=language_name,
             language_code=detected_code,
             conversation_summary=conversation_summary,

@@ -18,6 +18,11 @@
         "code": "ja",
         "name": "Japanese",
         "is_default": false
+    },
+    {
+        "code": "es",
+        "name": "Spanish",
+        "is_default": false
     }
 ]
 
