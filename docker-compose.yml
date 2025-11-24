@@ -25,7 +25,6 @@ services:
     cpus: 4
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - WHISPER_MODEL=${WHISPER_MODEL:-small}
       - RESPONSE_MODEL=${RESPONSE_MODEL:-gpt-4o-mini}
       - TTS_MODEL=${TTS_MODEL:-gpt-4o-mini-tts}
       - TTS_VOICE=${TTS_VOICE:-alloy}
@@ -35,6 +34,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-VsDtXqIt6c5Zu5z8Y6b3CBsprn2qW26xHQ+6imFD}
       - AWS_REGION=${AWS_REGION:-ap-south-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-blog-616}
+      - ASSEMBLYAI_API_KEY=${ASSEMBLYAI_API_KEY}
     volumes:
       - ./.cache:/root/.cache
 

@@ -1,13 +1,13 @@
 ## Fish Market Voice Bot
 
-Async FastAPI service that turns customer voice queries into Malayalam or English answers powered by [OpenAI Whisper](https://github.com/openai/whisper) for speech recognition, OpenAI responses for reasoning, and OpenAI TTS for speech synthesis. Fish rates are vectorized from `fish_rate.json` so the bot can answer inventory/price questions quickly without a database.
+Async FastAPI service that turns customer voice queries into Malayalam or English answers powered by AssemblyAI for speech recognition, OpenAI responses for reasoning, and OpenAI TTS for speech synthesis. Fish rates are vectorized from `fish_rate.json` so the bot can answer inventory/price questions quickly without a database.
 
 ### Features
 - Voice → text → response → voice loop handled end-to-end in `FishMarketVoiceBot`.
 - Malayalam detection: Malayalam queries receive Malayalam replies; others default to English.
 - Fish catalog semantic retrieval via OpenAI embeddings for accurate price/stock lookup.
 - Async FastAPI endpoint `/voice-chat` returning MP3 audio plus transcript/reply metadata headers.
-- Dockerfile + docker-compose for easy deployment with GPU-less Whisper (defaults to `small`).
+- Dockerfile + docker-compose for easy deployment with CPU-only inference.
 
 ### Prerequisites
 - Python 3.11+

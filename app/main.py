@@ -5,16 +5,13 @@ import json
 import re
 import tempfile
 import uuid
-import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import boto3
-import whisper
+import assemblyai as aai
 
-# Suppress FP16 warning on CPU (Whisper automatically falls back to FP32)
-warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,9 +76,27 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 client = AsyncOpenAI(api_key=settings.openai_api_key)
 vector_store: FishVectorStore | None = None
-_whisper_model: whisper.Whisper | None = None
 memory_store: ConversationMemory | None = None
 _supported_languages: dict[str, str] | None = None  # Map of language codes to names
+
+_assemblyai_transcriber: aai.Transcriber | None = None
+
+
+def get_transcriber() -> aai.Transcriber:
+    """Return a cached AssemblyAI transcriber, initializing it if needed."""
+    global _assemblyai_transcriber
+    api_key = settings.assemblyai_api_key
+    if not api_key:
+        raise RuntimeError(
+            "AssemblyAI API key is not configured. "
+            "Set ASSEMBLYAI_API_KEY in your environment."
+        )
+
+    if _assemblyai_transcriber is None:
+        aai.settings.api_key = api_key
+        _assemblyai_transcriber = aai.Transcriber()
+
+    return _assemblyai_transcriber
 
 # Initialize S3 client
 s3_client = boto3.client(
@@ -228,13 +243,6 @@ async def ensure_vector_store() -> FishVectorStore:
     return vector_store
 
 
-async def ensure_whisper_model() -> whisper.Whisper:
-    global _whisper_model
-    if _whisper_model is None:
-        _whisper_model = await asyncio.to_thread(
-            whisper.load_model, settings.whisper_model
-        )
-    return _whisper_model
 
 
 async def run_llm(messages: list[dict], temperature: float = 0.2) -> str:
@@ -613,50 +621,87 @@ async def upload_audio_to_s3(
 
 
 async def process_audio_payload(audio_blob: bytes, filename: str | None) -> tuple[str, str, str, str]:
-    """Process audio blob for transcription."""
-    model = await ensure_whisper_model()
+    """Process audio blob for transcription using AssemblyAI."""
     if not audio_blob:
         raise HTTPException(status_code=400, detail="Audio file is empty.")
 
+    try:
+        transcriber = get_transcriber()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Create a temporary file for AssemblyAI
     suffix = Path(filename or "audio.wav").suffix or ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_blob)
         tmp_path = tmp.name
 
     try:
-        result = await asyncio.to_thread(
-            model.transcribe,
+        # Use AssemblyAI to transcribe with language detection
+        # First, transcribe in the original language to get both original text and language
+        config = aai.TranscriptionConfig(
+            language_detection=True,  # Enable automatic language detection
+        )
+        
+        # Transcribe the audio file
+        transcript = await asyncio.to_thread(
+            transcriber.transcribe,
             tmp_path,
-            task="translate",
+            config=config,
+        )
+        
+        if transcript.status == aai.TranscriptStatus.error:
+            raise HTTPException(
+                status_code=400,
+                detail=f"AssemblyAI transcription error: {transcript.error}",
+            )
+        
+        # Get the transcribed text in the original language
+        original_text = transcript.text.strip() if transcript.text else ""
+        if not original_text:
+            raise HTTPException(status_code=400, detail="Unable to transcribe audio.")
+        
+        # Get detected language code from AssemblyAI response (falls back to English)
+        transcript_meta = getattr(transcript, "json_response", {}) or {}
+        raw_lang_code = transcript_meta.get("language_code") or "en"
+        print(f"[DEBUG AssemblyAI] Raw detected language code: {raw_lang_code}")
+        
+        # Normalize language code (e.g., zh-cn -> zh)
+        lang_code = normalize_language_code(raw_lang_code)
+        print(f"[DEBUG AssemblyAI] Normalized language code: {lang_code}")
+        
+        # Check if detected language is supported
+        if not is_language_supported(lang_code):
+            # If not supported, default to English
+            print(f"[DEBUG AssemblyAI] Language {lang_code} not supported, defaulting to English")
+            lang_code = "en"
+        
+        lang_name = language_name_from_code(lang_code)
+        print(f"[DEBUG AssemblyAI] Final language: {lang_name} (code: {lang_code})")
+        
+        # Translate to English if the detected language is not English
+        if lang_code.lower() == "en":
+            english_text = original_text
+        else:
+            # Use the existing translation function to translate to English
+            english_text = await translate_text(original_text, "English")
+        
+        return original_text, english_text, lang_code, lang_name
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing audio with AssemblyAI: {str(e)}",
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)  # type: ignore[arg-type]
 
-    english_text = result.get("text", "").strip()
-    if not english_text:
-        raise HTTPException(status_code=400, detail="Unable to transcribe audio.")
-
-    raw_lang_code = result.get("language", "en")
-    print(f"[DEBUG Whisper] Raw detected language code: {raw_lang_code}")
-    
-    # Normalize language code (e.g., zh-cn -> zh)
-    lang_code = normalize_language_code(raw_lang_code)
-    print(f"[DEBUG Whisper] Normalized language code: {lang_code}")
-    
-    # Check if detected language is supported
-    if not is_language_supported(lang_code):
-        # If not supported, default to English
-        print(f"[DEBUG Whisper] Language {lang_code} not supported, defaulting to English")
-        lang_code = "en"
-    
-    lang_name = language_name_from_code(lang_code)
-    print(f"[DEBUG Whisper] Final language: {lang_name} (code: {lang_code})")
-    return english_text, english_text, lang_code, lang_name
-
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    await asyncio.gather(ensure_vector_store(), ensure_whisper_model())
+    await ensure_vector_store()
 
 
 @app.get("/health")

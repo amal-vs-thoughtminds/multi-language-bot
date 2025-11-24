@@ -7,7 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     openai_api_key: str
-    whisper_model: str = "small"
     response_model: str = "gpt-4o-mini"
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
@@ -26,6 +25,7 @@ class Settings(BaseSettings):
     aws_secret_access_key: str
     aws_region: str = "ap-south-1"
     s3_bucket_name: str = "blog-616"
+    assemblyai_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
