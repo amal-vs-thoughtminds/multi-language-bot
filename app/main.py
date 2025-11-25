@@ -79,6 +79,7 @@ client = AsyncOpenAI(api_key=settings.openai_api_key)
 vector_store: FishVectorStore | None = None
 memory_store: ConversationMemory | None = None
 _supported_languages: dict[str, str] | None = None  # Map of language codes to names
+_fish_translation_hint: str | None = None  # Human hint of fish aliases for translations
 
 _assemblyai_transcriber: aai.Transcriber | None = None
 
@@ -384,6 +385,43 @@ def load_supported_languages() -> dict[str, str]:
         # Fallback to English only
         _supported_languages = {"en": "English"}
         return _supported_languages
+
+
+def get_fish_translation_hint() -> str:
+    """Return canonical fish names with aliases for translation instructions."""
+    global _fish_translation_hint
+    if _fish_translation_hint is not None:
+        return _fish_translation_hint
+
+    data_path = settings.fish_data_path
+    if not data_path.exists():
+        _fish_translation_hint = ""
+        return _fish_translation_hint
+
+    try:
+        raw_data = json.loads(data_path.read_text())
+    except Exception:
+        _fish_translation_hint = ""
+        return _fish_translation_hint
+
+    hints: list[str] = []
+    for entry in raw_data:
+        names = entry.get("fish_names") or []
+        if not names and entry.get("fish_name"):
+            names = [entry.get("fish_name")]
+
+        cleaned = [str(name).strip() for name in names if str(name).strip()]
+        if not cleaned:
+            continue
+        primary = cleaned[0]
+        aliases = [alias for alias in cleaned[1:]]
+        if aliases:
+            hints.append(f"{primary} (aliases: {', '.join(aliases)})")
+        else:
+            hints.append(primary)
+
+    _fish_translation_hint = "; ".join(hints)
+    return _fish_translation_hint
 
 
 def normalize_language_code(lang_code: str) -> str:
@@ -715,9 +753,29 @@ def is_listing_all_fishes_query(text: str) -> bool:
 async def translate_text(text: str, target_language: str) -> str:
     if not text.strip():
         return ""
+    fish_hint = get_fish_translation_hint()
+    normalized_target = (target_language or "").strip().lower()
+    fish_guidance = ""
+    if fish_hint:
+        if normalized_target.startswith("english"):
+            fish_guidance = (
+                "\n\nFish catalog reference:\n"
+                f"{fish_hint}\n"
+                "When the source includes any alias above (including Chinese or other languages), "
+                "translate it into the matching canonical English name verbatim. "
+                "Do not substitute with similar fish species."
+            )
+        else:
+            fish_guidance = (
+                "\n\nFish catalog reference:\n"
+                f"{fish_hint}\n"
+                "If the source already uses one of the canonical English names above, keep that name unchanged "
+                "so the specific fish species is preserved."
+            )
     prompt = (
         f"Translate the following text to {target_language}. "
-        "Respond with only the translated sentence.\n\n"
+        "Respond with only the translated sentence."
+        f"{fish_guidance}\n\n"
         f"{text}"
     )
     messages = [
